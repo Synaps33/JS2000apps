@@ -1,0 +1,301 @@
+// ================== BUTTONS ==================
+var BTN_UP=1<<4, BTN_DOWN=1<<5, BTN_LEFT=1<<6, BTN_RIGHT=1<<7;
+var BTN_B=1<<0, BTN_X=1<<9, BTN_SELECT=1<<2, BTN_A=1<<8, BTN_START=1<<3;
+
+// ================== VIRTUAL ==================
+var VW=320,VH=240,SW=320,SH=240;
+var scaleX=SW/VW,scaleY=SH/VH;
+function sx(x){return(x*scaleX)|0;}
+function sy(y){return(y*scaleY)|0;}
+function sw(w){return(w*scaleX)|0;}
+function sh(h){return(h*scaleY)|0;}
+
+// ================== DATA ==================
+var lists=[],selectedList=0,selectedItem=0;
+var mode="lists",keyboardMode="";
+var keyboardText="",savePath="/mnt/sda1/sajnaps/planner.json";
+
+var confirmMode=false,confirmChoice=0;
+
+var rows=[
+"QWERTYUIOP",
+"ASDFGHJKL",
+"ZXCVBNM",
+"1234567890",
+" .,!<-OK"
+];
+
+var keyX=0,keyY=0;
+
+// ================== DEBOUNCE ==================
+var prevInput=0;
+function pressed(i,k){return(i&k)&&!(prevInput&k);}
+
+// ================== SAVE ==================
+function saveData(){FS.writeTextFile(savePath,JSON.stringify(lists));}
+function loadData(){var t=FS.readTextFile(savePath);if(t)lists=JSON.parse(t);}
+loadData();
+
+// ================== UI ==================
+function card(x,y,w,h,col){
+    ScreenDraw.fillRect(x,y,w,h,0xFF020617);
+    ScreenDraw.fillRect(x+2,y+2,w-4,h-4,col);
+    ScreenDraw.fillRect(x+2,y+2,w-4,2,0x22FFFFFF);
+}
+
+// ================== TOGGLE ==================
+function toggleSwitch(x,y,it){
+    var w = sw(44);
+    var h = sh(16);
+
+    // FIX init
+    if(it.anim === undefined) it.anim = it.done ? 1 : 0;
+
+    var target = it.done ? 1 : 0;
+    it.anim += (target - it.anim) * 0.35;
+
+    var bgCol = it.done ? 0xFF22C55E : 0xFF374151;
+    card(x,y,w,h,bgCol);
+
+    var knob = sw(16);
+    var range = w - knob - 6;
+    var pos = it.anim * range;
+
+    if(it.done){
+        ScreenDraw.fillRect(x+2,y+2,w-4,h-4,0x2200FF88);
+    }
+
+    ScreenDraw.fillRect(x+3+pos,y+3,knob,h-6,0xFFFFFFFF);
+}
+
+// ================== DRAW ==================
+function draw(){
+    ScreenDraw.clear(0xFF020617);
+
+    if(mode==="lists")drawLists();
+    if(mode==="items")drawItems();
+    if(mode==="keyboard")drawKeyboard();
+
+    if(confirmMode)drawConfirm();
+}
+
+// ================== LISTS ==================
+function drawLists(){
+    ScreenDraw.text8x8(sx(8),sy(8),"CHECKLISTS",0xFFFFFFFF);
+
+    for(var i=0;i<lists.length;i++){
+        var y=40+i*26;
+        var col=i===selectedList?0xFF1D4ED8:0xFF111827;
+
+        card(sx(10),sy(y),sw(300),sh(22),col);
+
+        ScreenDraw.text5x8(sx(20),sy(y+7),
+        lists[i].name+" ("+lists[i].items.length+")",0xFFFFFFFF);
+    }
+
+    ScreenDraw.text5x8(sx(10),sy(225),
+    "A open  X delete  START new  SELECT save",0xFF6B7280);
+}
+
+// ================== ITEMS ==================
+function drawItems(){
+    if(!lists[selectedList]) return;
+
+    var list=lists[selectedList];
+    if(!list.items) return;
+
+    var done=0;
+    for(var i=0;i<list.items.length;i++) if(list.items[i].done) done++;
+
+    ScreenDraw.text8x8(sx(8),sy(8),list.name,0xFFFFFFFF);
+
+    for(var i=0;i<list.items.length;i++){
+        var y=40+i*26;
+        var it=list.items[i];
+
+        var col=i===selectedItem?0xFF1D4ED8:0xFF111827;
+        card(sx(10),sy(y),sw(300),sh(22),col);
+
+        toggleSwitch(sx(18),sy(y+3),it);
+
+        var txtCol=it.done?0xFF86EFAC:0xFFFFFFFF;
+        ScreenDraw.text5x8(sx(70),sy(y+7),it.text,txtCol);
+    }
+
+    ScreenDraw.text5x8(sx(10),sy(210),
+    "Done "+done+"/"+list.items.length,0xFF6B7280);
+
+    ScreenDraw.text5x8(sx(10),sy(225),
+    "A toggle  X delete  START add  B back",0xFF6B7280);
+}
+
+// ================== KEYBOARD ==================
+function drawKeyboard(){
+    ScreenDraw.text8x8(sx(8),sy(8),"ENTER TEXT",0xFFFFFFFF);
+
+    card(sx(20),sy(30),sw(280),sh(24),0xFF111827);
+    ScreenDraw.text5x8(sx(28),sy(38),keyboardText,0xFFFFFFFF);
+
+    var keyH=18;
+    var width=280;
+    var off=(320-width)/2;
+
+    for(var r=0;r<rows.length;r++){
+        var row=rows[r];
+        var keyW=width/row.length;
+
+        for(var c=0;c<row.length;c++){
+            var x=off+c*keyW;
+            var y=65+r*(keyH+4);
+
+            var sel=(r===keyY&&c===keyX);
+            var col=sel?0xFF3B82F6:0xFF1F2937;
+
+            if(sel){
+                ScreenDraw.fillRect(sx(x-2),sy(y-2),sw(keyW+2),sh(keyH+2),0x2200AAFF);
+            }
+
+            card(sx(x),sy(y),sw(keyW-4),sh(keyH),col);
+            ScreenDraw.text5x8(sx(x+keyW/2-3),sy(y+5),row[c],0xFFFFFFFF);
+        }
+    }
+
+    ScreenDraw.text5x8(sx(10),sy(225),
+    "A select  START confirm  B cancel",0xFF6B7280);
+}
+
+// ================== CONFIRM ==================
+function drawConfirm(){
+    card(sx(60),sy(80),sw(200),sh(80),0xFF111827);
+
+    ScreenDraw.text8x8(sx(90),sy(90),"DELETE?",0xFFFFFFFF);
+
+    var yesCol=confirmChoice?0xFFDC2626:0xFF374151;
+    var noCol=!confirmChoice?0xFF2563EB:0xFF374151;
+
+    card(sx(80),sy(120),sw(60),sh(24),noCol);
+    ScreenDraw.text5x8(sx(95),sy(128),"NO",0xFFFFFFFF);
+
+    card(sx(160),sy(120),sw(60),sh(24),yesCol);
+    ScreenDraw.text5x8(sx(175),sy(128),"YES",0xFFFFFFFF);
+}
+
+// ================== INPUT ==================
+function update(input){
+
+    if(confirmMode){
+        if(pressed(input,BTN_LEFT)||pressed(input,BTN_RIGHT))
+            confirmChoice=1-confirmChoice;
+
+        if(pressed(input,BTN_A)){
+            if(confirmChoice){
+                lists.splice(selectedList,1);
+                selectedList=Math.max(0,selectedList-1);
+            }
+            confirmMode=false;
+        }
+
+        if(pressed(input,BTN_B)) confirmMode=false;
+
+        prevInput=input;
+        return;
+    }
+
+    if(mode==="lists"){
+        if(pressed(input,BTN_DOWN)) selectedList=Math.min(selectedList+1,lists.length-1);
+        if(pressed(input,BTN_UP)) selectedList=Math.max(selectedList-1,0);
+
+        if(pressed(input,BTN_A)&&lists.length && lists[selectedList]){
+            mode="items";selectedItem=0;
+        }
+
+        if(pressed(input,BTN_X)&&lists.length){
+            confirmMode=true;confirmChoice=0;
+        }
+
+        if(pressed(input,BTN_START)){
+            keyboardText="";keyboardMode="newList";
+            keyX=0;keyY=0;mode="keyboard";
+        }
+
+        if(pressed(input,BTN_SELECT)) saveData();
+    }
+
+    else if(mode==="items"){
+        var list=lists[selectedList];
+
+        if(pressed(input,BTN_DOWN)) selectedItem=Math.min(selectedItem+1,list.items.length-1);
+        if(pressed(input,BTN_UP)) selectedItem=Math.max(selectedItem-1,0);
+
+        if(pressed(input,BTN_A)&&list.items[selectedItem]){
+            var it=list.items[selectedItem];
+            it.done=!it.done;
+
+            if(it.anim===undefined) it.anim = it.done?1:0;
+        }
+
+        if(pressed(input,BTN_X)&&list.items.length){
+            list.items.splice(selectedItem,1);
+            selectedItem=Math.max(0,selectedItem-1);
+        }
+
+        if(pressed(input,BTN_START)){
+            keyboardText="";keyboardMode="newItem";
+            keyX=0;keyY=0;mode="keyboard";
+        }
+
+        if(pressed(input,BTN_B)) mode="lists";
+
+        if(pressed(input,BTN_SELECT)) saveData();
+    }
+
+    else if(mode==="keyboard"){
+        var row=rows[keyY];
+
+        if(pressed(input,BTN_RIGHT)) keyX=Math.min(keyX+1,row.length-1);
+        if(pressed(input,BTN_LEFT)) keyX=Math.max(keyX-1,0);
+
+        if(pressed(input,BTN_DOWN)){
+            keyY=Math.min(keyY+1,rows.length-1);
+            keyX=Math.min(keyX,rows[keyY].length-1);
+        }
+
+        if(pressed(input,BTN_UP)){
+            keyY=Math.max(keyY-1,0);
+            keyX=Math.min(keyX,rows[keyY].length-1);
+        }
+
+        if(pressed(input,BTN_A)){
+            var k=rows[keyY][keyX];
+
+            if(k==="O"&&rows[keyY]===" .,!<-OK"){confirmText();}
+            else if(k==="<"){keyboardText=keyboardText.slice(0,-1);}
+            else keyboardText+=k;
+        }
+
+        if(pressed(input,BTN_START)) confirmText();
+        if(pressed(input,BTN_B)) mode="lists";
+    }
+
+    prevInput=input;
+}
+
+// ================== CONFIRM TEXT ==================
+function confirmText(){
+    if(!keyboardText.length)return;
+
+    if(keyboardMode==="newList"){
+        lists.push({name:keyboardText,items:[]});
+        mode="lists";
+    }else{
+        lists[selectedList].items.push({text:keyboardText,done:false,anim:0});
+        mode="items";
+    }
+}
+
+// ================== LOOP ==================
+setMainLoop(function(){
+    var input=getInputState();
+    update(input);
+    draw();
+});

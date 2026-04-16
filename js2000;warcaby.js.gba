@@ -1,0 +1,382 @@
+// ================== BUTTONS ==================
+var BTN_UP=1<<4, BTN_DOWN=1<<5, BTN_LEFT=1<<6, BTN_RIGHT=1<<7;
+var BTN_A=1<<8;
+
+// ================== STATE ==================
+var STATE_MENU=0, STATE_GAME=1;
+var state=STATE_MENU;
+
+// ================== SCREEN ==================
+var SCREEN_W=320, SCREEN_H=240;
+var TILE=Math.floor(SCREEN_H/8);
+var OFFSET_X=Math.floor((SCREEN_W - TILE*8)/2);
+var OFFSET_Y=0;
+
+// ================== CONFIG ==================
+var vsAI=true;
+
+// ================== GAME ==================
+var board=[], currentPlayer=1;
+var selected=null, moves=[];
+var cursor={x:0,y:0};
+var prevInput=0;
+var chainCapture=null;
+
+var gameOver=false, winner=0;
+
+
+var aiHighlight=null;
+var aiHighlightTimer=0;
+
+// ================== INIT ==================
+function initBoard(){
+    board=[];
+    for(var y=0;y<8;y++){
+        board[y]=[];
+        for(var x=0;x<8;x++){
+            board[y][x]=0;
+            if(y<3 && (x+y)%2) board[y][x]=2;
+            if(y>4 && (x+y)%2) board[y][x]=1;
+        }
+    }
+    currentPlayer = Math.random()<0.5?1:2;
+    selected=null;
+    moves=[];
+    chainCapture=null;
+    gameOver=false;
+    winner=0;
+    aiHighlight=null;
+    aiHighlightTimer=0;
+}
+
+// ================== HELPERS ==================
+function inside(x,y){return x>=0&&y>=0&&x<8&&y<8;}
+function cloneBoard(b){
+    var n=[];
+    for(var y=0;y<8;y++) n[y]=b[y].slice();
+    return n;
+}
+
+// ================== MOVES ==================
+function getMoves(b,x,y){
+    var p=b[y][x];
+    if(!p) return [];
+
+    var res=[];
+    var moveDirs=[];
+    if(p==1) moveDirs=[[-1,-1],[1,-1]];
+    if(p==2) moveDirs=[[-1,1],[1,1]];
+    if(p>=3) moveDirs=[[-1,-1],[1,-1],[-1,1],[1,1]];
+
+    for(var i=0;i<moveDirs.length;i++){
+        var dx=moveDirs[i][0], dy=moveDirs[i][1];
+        var nx=x+dx, ny=y+dy;
+        if(inside(nx,ny) && !b[ny][nx]){
+            res.push({x:nx,y:ny});
+        }
+    }
+
+    var capDirs=[[-1,-1],[1,-1],[-1,1],[1,1]];
+    for(var i=0;i<capDirs.length;i++){
+        var dx=capDirs[i][0], dy=capDirs[i][1];
+        var nx=x+dx, ny=y+dy;
+        var ex=x+dx*2, ey=y+dy*2;
+
+        if(inside(ex,ey) && b[ny][nx] && (b[ny][nx]%2)!=(p%2) && !b[ey][ex]){
+            res.push({x:ex,y:ey,cap:true,cx:nx,cy:ny});
+        }
+    }
+
+    return res;
+}
+
+function getCaptureMovesOnly(b,x,y){
+    var m=getMoves(b,x,y), caps=[];
+    for(var i=0;i<m.length;i++){
+        if(m[i].cap) caps.push(m[i]);
+    }
+    return caps;
+}
+
+function getAllMoves(b,player){
+    var all=[], caps=[];
+    for(var y=0;y<8;y++){
+        for(var x=0;x<8;x++){
+            if(b[y][x] && (b[y][x]%2)==(player%2)){
+                var m=getMoves(b,x,y);
+                for(var i=0;i<m.length;i++){
+                    var mv={from:{x:x,y:y},to:m[i]};
+                    if(m[i].cap) caps.push(mv);
+                    else all.push(mv);
+                }
+            }
+        }
+    }
+    return caps.length?caps:all;
+}
+
+// ================== APPLY ==================
+function applyMove(b,move){
+    var nb=cloneBoard(b);
+    var p=nb[move.from.y][move.from.x];
+
+    nb[move.from.y][move.from.x]=0;
+    nb[move.to.y][move.to.x]=p;
+
+    if(move.to.cap){
+        nb[move.to.cy][move.to.cx]=0;
+    }
+
+    if(p==1 && move.to.y==0) nb[move.to.y][move.to.x]=3;
+    if(p==2 && move.to.y==7) nb[move.to.y][move.to.x]=4;
+
+    return nb;
+}
+
+// ================== AI ==================
+function makeAIMove(){
+
+    var moves=getAllMoves(board,2);
+
+    if(moves.length==0) return null;
+
+   
+    var hasCapture = false;
+
+    for(var i=0;i<moves.length;i++){
+        if(moves[i].to.cap){
+            hasCapture = true;
+            break;
+        }
+    }
+
+   
+    if(hasCapture){
+        var caps=[];
+        for(var i=0;i<moves.length;i++){
+            if(moves[i].to.cap) caps.push(moves[i]);
+        }
+        return caps[0];
+    }
+
+  
+    return moves[0];
+}
+
+// ================== DRAW ==================
+function drawPiece(px,py,col){
+    ScreenDraw.fillRect(px+6,py+6,TILE-12,TILE-12,0x55000000);
+    ScreenDraw.fillRect(px+6,py+4,TILE-12,TILE-8,col);
+    ScreenDraw.fillRect(px+4,py+6,TILE-8,TILE-12,col);
+}
+
+function drawBoard(){
+
+    for(var y=0;y<8;y++){
+        for(var x=0;x<8;x++){
+            var px=OFFSET_X+x*TILE;
+            var py=OFFSET_Y+y*TILE;
+
+            var c=((x+y)%2)?0xFF1E293B:0xFF0F172A;
+            ScreenDraw.fillRect(px,py,TILE,TILE,c);
+
+            
+            if(aiHighlight && aiHighlight.x==x && aiHighlight.y==y){
+                ScreenDraw.rect(px,py,TILE,TILE,0xFFFFD700);
+            }
+
+            for(var i=0;i<moves.length;i++){
+                if(moves[i].x==x && moves[i].y==y){
+                    ScreenDraw.rect(px,py,TILE,TILE,0xFF22C55E);
+                }
+            }
+
+            var p=board[y][x];
+            if(p){
+                var col=(p%2==1)?0xFFFFFFFF:0xFFEF4444;
+                drawPiece(px,py,col);
+            }
+        }
+    }
+
+    ScreenDraw.rect(
+        OFFSET_X+cursor.x*TILE,
+        OFFSET_Y+cursor.y*TILE,
+        TILE,TILE,
+        0xFF38BDF8
+    );
+}
+
+// ================== INPUT ==================
+function pressed(btn,input){
+    return (input&btn)&&!(prevInput&btn);
+}
+
+// ================== GAME ==================
+function updateGame(input){
+
+    
+    if(aiHighlightTimer>0){
+        aiHighlightTimer--;
+    } else {
+        aiHighlight=null;
+    }
+
+    if(gameOver){
+        if(pressed(BTN_A,input)) initBoard();
+        return;
+    }
+
+    // ===== AI =====
+    if(currentPlayer==2 && vsAI){
+
+    var move = makeAIMove();
+
+    if(move){
+
+        aiHighlight = {x:move.from.x,y:move.from.y};
+        aiHighlightTimer = 30;
+
+        board = applyMove(board,move);
+
+        
+        if(move.to.cap){
+
+            var nx = move.to.x;
+            var ny = move.to.y;
+
+            var next = getCaptureMovesOnly(board,nx,ny);
+
+            while(next.length > 0){
+
+                aiHighlight = {x:nx,y:ny};
+                aiHighlightTimer = 30;
+
+                var m = next[0];
+
+                board = applyMove(board,{
+                    from:{x:nx,y:ny},
+                    to:m
+                });
+
+                nx = m.x;
+                ny = m.y;
+
+                next = getCaptureMovesOnly(board,nx,ny);
+            }
+        }
+
+        currentPlayer = 1;
+    }
+
+    return;
+}
+
+    // ===== INPUT =====
+    if(pressed(BTN_LEFT,input)) cursor.x--;
+    if(pressed(BTN_RIGHT,input)) cursor.x++;
+    if(pressed(BTN_UP,input)) cursor.y--;
+    if(pressed(BTN_DOWN,input)) cursor.y++;
+
+    cursor.x=Math.max(0,Math.min(7,cursor.x));
+    cursor.y=Math.max(0,Math.min(7,cursor.y));
+
+    if(pressed(BTN_A,input)){
+
+        
+        if(board[cursor.y][cursor.x] && (board[cursor.y][cursor.x]%2)==(currentPlayer%2)){
+
+            selected={x:cursor.x,y:cursor.y};
+
+            var all=getAllMoves(board,currentPlayer);
+            var mustCap=false;
+            for(var i=0;i<all.length;i++){
+                if(all[i].to.cap){ mustCap=true; break; }
+            }
+
+            var m=getMoves(board,cursor.x,cursor.y);
+            moves=[];
+
+            for(var i=0;i<m.length;i++){
+                if(!mustCap || m[i].cap) moves.push(m[i]);
+            }
+
+            return;
+        }
+
+        if(selected){
+            for(var i=0;i<moves.length;i++){
+                if(moves[i].x==cursor.x && moves[i].y==cursor.y){
+
+                    board=applyMove(board,{from:selected,to:moves[i]});
+
+                    if(moves[i].cap){
+                        var nx=cursor.x, ny=cursor.y;
+                        var next=getCaptureMovesOnly(board,nx,ny);
+
+                        if(next.length>0){
+                            chainCapture={x:nx,y:ny};
+                            selected=null;
+                            moves=[];
+                            return;
+                        }
+                    }
+
+                    chainCapture=null;
+                    selected=null;
+                    moves=[];
+                    currentPlayer = (currentPlayer==1)?2:1;
+                }
+            }
+        }
+    }
+
+    if(getAllMoves(board,1).length==0){gameOver=true;winner=2;}
+    if(getAllMoves(board,2).length==0){gameOver=true;winner=1;}
+}
+
+// ================== MENU ==================
+var menuIndex=0;
+var menu=["VS AI","PVP"];
+
+function drawMenu(){
+    ScreenDraw.text8x8(110,40,"CHECKERS",0xFFFFFFFF);
+
+    for(var i=0;i<menu.length;i++){
+        var col=(i==menuIndex)?0xFF38BDF8:0xFFFFFFFF;
+        ScreenDraw.fillRect(100,100+i*30,120,25,0xFF1E293B);
+        ScreenDraw.text8x8(135,110+i*30,menu[i],col);
+    }
+}
+
+function updateMenu(input){
+    if(pressed(BTN_DOWN,input)) menuIndex++;
+    if(pressed(BTN_UP,input)) menuIndex--;
+
+    menuIndex=Math.max(0,Math.min(menu.length-1,menuIndex));
+
+    if(pressed(BTN_A,input)){
+        vsAI=(menuIndex==0);
+        initBoard();
+        state=STATE_GAME;
+    }
+}
+
+// ================== MAIN ==================
+setMainLoop(function(){
+
+    var input=getInputState();
+    ScreenDraw.clear(0xFF020617);
+
+    if(state==STATE_MENU){
+        updateMenu(input);
+        drawMenu();
+    }
+
+    if(state==STATE_GAME){
+        updateGame(input);
+        drawBoard();
+    }
+
+    prevInput=input;
+});

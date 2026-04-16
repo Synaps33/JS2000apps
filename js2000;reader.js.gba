@@ -1,0 +1,480 @@
+// ===== INPUT =====
+var BTN_UP=1<<4, BTN_DOWN=1<<5, BTN_LEFT=1<<6, BTN_RIGHT=1<<7;
+var BTN_A=1<<8, BTN_B=1<<0;
+var BTN_L=1<<10, BTN_R=1<<11;
+var BTN_SELECT=1<<2;
+var prevInput = 0;
+var menuDirty = true;
+// ===== PATH =====
+var BOOK_DIR="/mnt/sda1/books";
+var SAVE_DIR="/mnt/sda1/sajnaps/booksaves";
+FS.mkdir(SAVE_DIR);
+
+// ===== STATE =====
+var books=[], selected=0;
+var scrollMenu=0, targetScrollMenu=0;
+var mode="menu";
+
+var currentBook="";
+
+// ===== READER =====
+var lines=[], chapters=[];
+var scrollY=0, targetScrollY=0;
+
+var LINE_H=12;
+var TEXT_X=14;
+
+var darkMode=true;
+
+// ===== COVER =====
+var coverCache={};
+var BASE_W=25, BASE_H=50;
+var SCALE=3;
+
+var COVER_W=(BASE_W*SCALE)|0;
+var COVER_H=(BASE_H*SCALE)|0;
+
+// ===== LAYOUT =====
+var COLS=3, MARGIN=4, TITLE_H=10;
+var ITEM_W=COVER_W;
+var ITEM_H=COVER_H+TITLE_H;
+
+// ===== LOADING =====
+var loadingBook=null;
+var loadStage=0;
+var loadText="";
+var loadWords=[];
+var loadIndex=0;
+
+// ===== LOAD BOOK LIST =====
+function loadBooks(){
+    books=FS.listDirs(BOOK_DIR)||[];
+}
+loadBooks();
+
+// ===== NORMALIZE =====
+function normalizePolish(t){
+
+    return t
+    .replace(/ą/g,"a")
+    .replace(/ć/g,"c")
+    .replace(/ę/g,"e")
+    .replace(/ł/g,"l")
+    .replace(/ń/g,"n")
+    .replace(/ó/g,"o")
+    .replace(/ś/g,"s")
+    .replace(/ż/g,"z")
+    .replace(/ź/g,"z")
+
+    .replace(/Ą/g,"A")
+    .replace(/Ć/g,"C")
+    .replace(/Ę/g,"E")
+    .replace(/Ł/g,"L")
+    .replace(/Ń/g,"N")
+    .replace(/Ó/g,"O")
+    .replace(/Ś/g,"S")
+    .replace(/Ż/g,"Z")
+    .replace(/Ź/g,"Z");
+}
+function normalizeText(t){
+    return normalizePolish(
+        t
+        .replace(/’/g,"'")
+        .replace(/‘/g,"'")
+        .replace(/“/g,'"')
+        .replace(/”/g,'"')
+        .replace(/–/g,"-")
+        .replace(/—/g,"-")
+    );
+}
+
+// ===== COVER BUILD =====
+function buildCover(book){
+    var raw=FS.readFile(BOOK_DIR+"/"+book+"/cover.bin");
+    if(!raw) return;
+
+    var img=new Uint32Array(BASE_W*BASE_H);
+
+    for(var i=0;i<img.length;i++){
+        var idx=i*4;
+        img[i]=(raw[idx+3]<<24)|(raw[idx]<<16)|(raw[idx+1]<<8)|raw[idx+2];
+    }
+
+    coverCache[book]=img;
+}
+
+// ===== COVER DRAW (FIT + CENTER) =====
+function drawCover(x,y,book){
+
+    var img=coverCache[book];
+
+    if(!img){
+        buildCover(book);
+        img=coverCache[book];
+        if(!img) return;
+    }
+
+    var scaleX=COVER_W/BASE_W;
+    var scaleY=COVER_H/BASE_H;
+    var s=scaleX<scaleY?scaleX:scaleY;
+
+    var drawW=(BASE_W*s)|0;
+    var drawH=(BASE_H*s)|0;
+
+    var offX=((COVER_W-drawW)>>1);
+    var offY=((COVER_H-drawH)>>1);
+
+    for(var py=0;py<BASE_H;py++){
+
+        var start=0;
+        var current=img[py*BASE_W];
+
+        for(var px=1;px<=BASE_W;px++){
+
+            var c=(px<BASE_W)?img[py*BASE_W+px]:-1;
+
+            if(c!==current){
+
+                ScreenDraw.fillRect(
+                    x+offX+(start*s)|0,
+                    y+offY+(py*s)|0,
+                    ((px-start)*s)|0,
+                    s|0,
+                    current
+                );
+
+                start=px;
+                current=c;
+            }
+        }
+    }
+}
+
+// ===== SAVE =====
+function saveProgress(book){
+    FS.writeTextFile(SAVE_DIR+"/"+book+".sav",""+targetScrollY);
+}
+
+function loadProgress(book){
+    var s=FS.readTextFile(SAVE_DIR+"/"+book+".sav");
+    if(s) targetScrollY=parseInt(s)||0;
+}
+
+// ===== PAGE SIZE =====
+function getPageSize(){
+    var TOP=10, BOTTOM=230;
+    var usable=BOTTOM-TOP;
+    var visible=(usable/LINE_H)|0;
+    if(visible<1) visible=1;
+    return visible*LINE_H;
+}
+
+// ===== ASYNC LOAD =====
+function updateLoading(){
+
+    if(loadStage===0){
+        loadText=FS.readTextFile(BOOK_DIR+"/"+loadingBook+"/book.txt");
+        if(!loadText){ mode="menu"; return; }
+
+        loadText=normalizeText(loadText);
+        loadWords=loadText.split(" ");
+
+        lines=[];
+        chapters=[];
+        loadIndex=0;
+
+        loadStage=1;
+        return;
+    }
+
+    if(loadStage===1){
+
+        var line="";
+        var processed=0;
+
+        while(loadIndex<loadWords.length && processed<300){
+
+            var w=loadWords[loadIndex];
+
+            if(w.startsWith("#")){
+                if(line.length) lines.push(line);
+
+                chapters.push(lines.length);
+                lines.push("§H "+w.replace("#",""));
+                lines.push("");
+                line="";
+                loadIndex++;
+                processed++;
+                continue;
+            }
+
+            if(line.length+w.length>38){
+                lines.push(line);
+                line=w;
+            }else{
+                line+=(line?" ":"")+w;
+            }
+
+            if(w.endsWith(".")){
+                lines.push(line);
+                lines.push("");
+                line="";
+            }
+
+            loadIndex++;
+            processed++;
+        }
+
+        if(loadIndex>=loadWords.length){
+            loadStage=2;
+        }
+
+        return;
+    }
+
+    if(loadStage===2){
+
+        scrollY=0;
+        targetScrollY=0;
+
+        loadProgress(loadingBook);
+        scrollY=targetScrollY;
+
+        currentBook=loadingBook;
+        loadingBook=null;
+
+        mode="reader";
+    }
+}
+
+// ===== LOADING SCREEN =====
+function drawLoading(){
+
+    ScreenDraw.clear(0xFF000000);
+
+    var dots=(Date.now()/300|0)%4;
+    var txt="LOADING";
+    for(var i=0;i<dots;i++) txt+=".";
+
+    ScreenDraw.text8x8(100,100,txt,0xFFFFFFFF);
+
+    var prog=loadIndex/(loadWords.length||1);
+
+    ScreenDraw.fillRect(40,140,240,6,0xFF333333);
+    ScreenDraw.fillRect(40,140,(240*prog)|0,6,0xFF00FF88);
+}
+
+// ===== MENU =====
+function drawMenu(){
+
+    ScreenDraw.clear(0xFF000000);
+
+    // ===== layout =====
+    var totalWidth = COLS * ITEM_W + (COLS - 1) * MARGIN;
+    var offsetX = (320 - totalWidth) >> 1;
+
+    var rowH = ITEM_H + MARGIN;
+
+    // ===== viewport (wydajność) =====
+    var startRow = (scrollMenu / rowH) | 0;
+    var endRow = startRow + 3;
+
+    for(var row=startRow; row<=endRow; row++){
+
+        for(var col=0; col<COLS; col++){
+
+            var i = row * COLS + col;
+            if(i >= books.length) break;
+
+            var x = offsetX + col * (ITEM_W + MARGIN);
+            var y = MARGIN + row * (ITEM_H + MARGIN) - scrollMenu;
+
+            // ===== cover =====
+            drawCover(x, y, books[i]);
+
+            // ===== TITLE =====
+            var name = books[i];
+
+            // skrócenie + ...
+            if(name.length > 12){
+                name = name.substring(0,11) + "...";
+            }
+
+            // szerokość tekstu (font 5x8 ≈ 6px znak)
+            var textW = name.length * 6;
+
+            // centrowanie
+            var tx = x + ((COVER_W - textW) >> 1);
+            if(tx < x) tx = x;
+
+            var ty = y + COVER_H + 2;
+
+            ScreenDraw.text5x8(tx, ty, name, 0xFFFFFFFF);
+
+            // ===== highlight =====
+            if(i === selected){
+
+                ScreenDraw.rect(
+                    x - 2,
+                    y - 2,
+                    ITEM_W,
+                    ITEM_H,
+                    0xFFFFFFFF
+                );
+            }
+        }
+    }
+}
+
+// ===== READER =====
+function drawReader(){
+
+    var bg=darkMode?0xFF101010:0xFFFFFFFF;
+    var fg=darkMode?0xFFEAEAEA:0xFF000000;
+
+    ScreenDraw.clear(bg);
+
+    var TOP=10, BOTTOM=230;
+    var usable=BOTTOM-TOP;
+
+    var visible=(usable/LINE_H)|0;
+    if(visible<1) visible=1;
+
+    var start=(scrollY/LINE_H)|0;
+    var offset=-(scrollY%LINE_H);
+
+    for(var i=0;i<visible+1;i++){
+
+        var idx=start+i;
+        if(idx>=lines.length) break;
+
+        var line=lines[idx];
+        var y=TOP+i*LINE_H+offset;
+
+        if(y<-LINE_H || y>BOTTOM) continue;
+
+        var color=fg;
+        var x=TEXT_X;
+
+        if(line.startsWith("§H ")){
+            line=line.substring(3);
+            color=0xFFFFFF00;
+            x=TEXT_X-6;
+        }
+
+        ScreenDraw.text5x8(x,y,line,color);
+    }
+
+    var prog=scrollY/(lines.length*LINE_H);
+
+    ScreenDraw.fillRect(0,230,320,10,0xFF333333);
+    ScreenDraw.fillRect(0,230,(320*prog)|0,10,0xFF00FF88);
+}
+
+// ===== INPUT =====
+function update(){
+
+   var inp = getInputState();
+var pressed = inp & ~prevInput; 
+
+   if(mode==="menu"){
+
+    var old = selected;
+
+    if(inp&BTN_RIGHT) selected++;
+    if(inp&BTN_LEFT) selected--;
+    if(inp&BTN_DOWN) selected+=COLS;
+    if(inp&BTN_UP) selected-=COLS;
+
+    if(selected<0) selected=0;
+    if(selected>=books.length) selected=books.length-1;
+
+    if(old !== selected){
+        menuDirty = true;
+    }
+
+    targetScrollMenu=(selected/COLS|0)*(ITEM_H+MARGIN);
+
+    if(inp&BTN_A){
+        loadingBook=books[selected];
+        loadStage=0;
+        mode="loading";
+    }
+}
+
+    else if(mode==="reader"){
+
+        var pageSize=getPageSize();
+
+        // linijka
+        if(inp & BTN_DOWN) targetScrollY+=LINE_H;
+        if(inp & BTN_UP) targetScrollY-=LINE_H;
+
+     
+        if(inp & BTN_RIGHT) targetScrollY+=pageSize;
+        if(inp & BTN_LEFT) targetScrollY-=pageSize;
+
+        
+        targetScrollY=(targetScrollY/LINE_H|0)*LINE_H;
+
+        // rozdziały
+        if(inp & BTN_R){
+            for(var i=0;i<chapters.length;i++){
+                if(chapters[i]*LINE_H>scrollY){
+                    targetScrollY=chapters[i]*LINE_H;
+                    break;
+                }
+            }
+        }
+
+        if(inp & BTN_L){
+            for(var i=chapters.length-1;i>=0;i--){
+                if(chapters[i]*LINE_H<scrollY){
+                    targetScrollY=chapters[i]*LINE_H;
+                    break;
+                }
+            }
+        }
+
+       if(pressed & BTN_SELECT){
+    darkMode = !darkMode;
+}
+
+        if(targetScrollY<0) targetScrollY=0;
+
+        var max=lines.length*LINE_H-(230-10);
+        if(max<0) max=0;
+        if(targetScrollY>max) targetScrollY=max;
+
+        if(inp & BTN_B){
+            saveProgress(currentBook);
+            mode="menu";
+        }
+    }
+
+    scrollMenu = targetScrollMenu;
+    scrollY+=(targetScrollY-scrollY)*0.3;
+    prevInput = inp;
+}
+
+// ===== LOOP =====
+setMainLoop(function(){
+
+    if(mode==="loading"){
+        updateLoading();
+        drawLoading();
+        return;
+    }
+
+    update();
+
+    if(mode==="menu"){
+        if(menuDirty){
+            drawMenu();
+            menuDirty=false;
+        }
+    }
+    else{
+        drawReader();
+    }
+});

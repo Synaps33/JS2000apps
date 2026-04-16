@@ -1,0 +1,702 @@
+// ===== INPUT =====
+var BTN_A = 1<<8;
+var BTN_START = 1<<3;
+var BTN_UP = 1<<4;
+var BTN_DOWN = 1<<5;
+var isGameOver = false;
+var coinsCollected = 0;
+FS.mkdir("/mnt/sda1/sajnaps");
+var needSaveStats = false;
+
+//====statistics====
+var STATS_PATH = "/mnt/sda1/sajnaps/neonrun_stats.txt";
+
+var stats = {
+    distance: 0,
+    coins: 0,
+    jumps: 0,
+    deaths: 0
+};
+
+
+
+function loadStats(){
+    var txt = FS.readTextFile(STATS_PATH);
+    if(!txt) return;
+
+    var s = txt.split(",");
+
+    stats.distance = Number(s[0])||0;
+    stats.coins    = Number(s[1])||0;
+    stats.jumps    = Number(s[2])||0;
+    stats.deaths   = Number(s[3])||0;
+}
+
+function saveStats(){
+
+    var txt =
+        stats.distance + "," +
+        stats.coins + "," +
+        stats.jumps + "," +
+        stats.deaths;
+
+    FS.writeTextFile("/mnt/sda1/sajnaps/neonrun_stats.txt", txt);
+}
+
+loadStats();
+
+// =======================
+// ACHIEVEMENTS SYSTEM
+// =======================
+
+var Achievements = (function() {
+var SAVE_PATH = "/mnt/sda1/sajnaps/neonrun_ach.txt";
+
+    var list = {};
+    var unlocked = {};
+    var queue = [];
+
+    var current = null;
+    var timer = 0;
+
+    var DURATION = 240;
+    var ANIM_TIME = 25;
+
+    function add(id, title, desc) {
+        list[id] = { title: title, desc: desc };
+    }
+function load(){
+    var txt = FS.readTextFile(SAVE_PATH);
+    if(!txt) return;
+
+    var arr = txt.split(",");
+    var i=0;
+    while(i<arr.length){
+        unlocked[arr[i]] = true;
+        i++;
+    }
+}
+
+function save(){
+    var keys = [];
+    for(var k in unlocked){
+        keys.push(k);
+    }
+    FS.writeTextFile(SAVE_PATH, keys.join(","));
+}
+    function unlock(id){
+    if (!list[id] || unlocked[id]) return;
+
+    unlocked[id] = true;
+    queue.push(list[id]);
+
+    save(); // 
+}
+
+    function update() {
+        if (!current && queue.length > 0) {
+            current = queue.shift();
+            timer = 0;
+        }
+
+        if (current) {
+            timer++;
+            if (timer > DURATION) {
+                current = null;
+            }
+        }
+    }
+
+    function draw() {
+        if (!current) return;
+
+        var screenW = 320;
+        var boxW = Math.floor(screenW * 0.7);
+        var boxH = 32;
+        var x = (screenW - boxW) >> 1;
+
+        var t = timer;
+        var y;
+
+        if (t < ANIM_TIME) {
+            var k = t / ANIM_TIME;
+            k = 1 - (1 - k)*(1 - k);
+            y = -boxH + (boxH + 8) * k;
+        } else if (t > DURATION - ANIM_TIME) {
+            var k2 = (t - (DURATION - ANIM_TIME)) / ANIM_TIME;
+            k2 = k2 * k2;
+            y = 8 - (boxH + 8) * k2;
+        } else {
+            y = 8;
+        }
+
+        // cień
+        ScreenDraw.fillRect(x+2, y+2, boxW, boxH, 0x55000000);
+
+        // neon tło (zmienione pod Twój styl)
+        ScreenDraw.fillRect(x, y, boxW, boxH, 0xFF222244);
+
+        // border neon
+        ScreenDraw.rect(x, y, boxW, boxH, 0xFF00FFFF);
+
+        // tekst
+        ScreenDraw.text5x8(x + 8, y + 6, current.title, 0xFFFF00FF);
+        ScreenDraw.text5x8(x + 8, y + 18, current.desc, 0xFFFFFFFF);
+    }
+load();
+   return {
+    add: add,
+    unlock: unlock,
+    update: update,
+    draw: draw,
+
+    getList: function(){ return list; },
+    isUnlocked: function(id){ return !!unlocked[id]; }
+};
+
+})();
+
+Achievements.add("jump","First Jump","You pressed A");
+Achievements.add("score100","100 Points","Nice start");
+Achievements.add("score1000","1000 Points","Getting good");
+Achievements.add("score5000","5000 Points","Pro runner");
+Achievements.add("coins10","10 Coins","Coin Collector");
+Achievements.add("coins100","100 Coins","Gold Digger");
+
+
+// ===== STATE =====
+var STATE_MENU = 0;
+var STATE_GAME = 1;
+var STATE_GAMEOVER = 2;
+var STATE_ACHIEVEMENTS = 3;
+var STATE_CREDITS = 4;
+var STATE_STATS = 5;
+
+var state = STATE_MENU;
+var prevInput = 0;
+var gameOverTimer = 0;
+// ===== MENU =====
+var menuIndex = 0;
+var menuItems = ["PLAY","ACHIEVEMENTS","CREDITS","STATS"];
+
+// ===== PLAYER =====
+var player={x:60,y:150,w:18,h:18,vy:0,jumps:0};
+var gravity=0.7, jumpPower=-10;
+
+// ===== WORLD =====
+var groundY=210;
+var obstacles=[], platforms=[], particles=[], coins=[];
+var lastSpikeWave = 0;
+var scoreTimer = 0;
+var spawnTimer=0;
+
+// ===== GRID =====
+var gridOffset = 0;
+
+// ===== SCORE =====
+var score = 0;
+var highscore = 0;
+var baseSpeed = 5;
+var speed = baseSpeed;
+
+
+// ===== LOAD SCORE =====
+var hs = FS.readTextFile("/mnt/sda1/sajnaps/neonrun_hs.txt");
+if(hs!=null){
+    highscore = Math.floor(Number(hs));
+    if(isNaN(highscore)) highscore = 0;
+}
+
+// ===== PARTICLES =====
+function spawnParticles(x,y){
+    var i=0;
+    while(i<10){
+        particles.push({
+            x:x,
+            y:y,
+            vx:(Math.random()*4-2),
+            vy:-Math.random()*3,
+            life:20,
+            color: (Math.random()<0.5)?0xFFFF00FF:0xFF00FFFF
+        });
+        i++;
+    }
+}
+
+// ===== SPIKE =====
+function drawSpike(x,y){
+ y += 6;
+    ScreenDraw.fillRect(x+6,y+4,2,12,0xFFFF00FF);
+    ScreenDraw.fillRect(x+5,y+6,4,10,0xFFFF00FF);
+    ScreenDraw.fillRect(x+4,y+8,6,8,0xFFFF00FF);
+    ScreenDraw.fillRect(x+3,y+10,8,6,0xFFFF00FF);
+}
+
+// ===== PLATFORM =====
+function drawPlatform(x,y){
+    ScreenDraw.fillRect(x,y,34,6,0xFF00FFFF);
+}
+
+// ===== COIN =====
+function drawCoin(x,y){
+    ScreenDraw.fillRect(x,y,6,6,0xFFFFD700);
+    ScreenDraw.fillRect(x+1,y+1,4,4,0xFFFFFF00);
+}
+
+// ===== GRID (1 WARSTWA NEON) =====
+function drawBackground(){
+    ScreenDraw.clear(0xFF02061A);
+
+    var spacing = 30;
+
+    gridOffset -= 0.7;
+    if(gridOffset <= -spacing) gridOffset += spacing;
+
+    var x = -spacing + gridOffset;
+    while(x < 320){
+        ScreenDraw.line(x,0,x,240,0x33FF00FF); // neon róż
+        x += spacing;
+    }
+
+    var y = 0;
+    while(y < 240){
+        ScreenDraw.line(0,y,320,y,0x2200FFFF); // neon cyan
+        y += spacing;
+    }
+}
+
+// ===== BUTTON =====
+function drawButton(x,y,w,h,text,selected){
+
+    var bg = selected ? 0xFFFF00FF : 0xFF222244;
+    var border = selected ? 0xFF00FFFF : 0xFF5555AA;
+
+    // ===== MAIN BODY =====
+    ScreenDraw.fillRect(x+2,y,w-4,h,bg);     // środek
+    ScreenDraw.fillRect(x,y+2,w,h-4,bg);     // pion
+
+    // ===== BORDER =====
+    ScreenDraw.rect(x+2,y,w-4,h,border);
+    ScreenDraw.rect(x,y+2,w,h-4,border);
+
+    // ===== "CUT" CORNERS (fake rounding) =====
+    ScreenDraw.fillRect(x,y,2,2,0x00000000);
+    ScreenDraw.fillRect(x+w-2,y,2,2,0x00000000);
+    ScreenDraw.fillRect(x,y+h-2,2,2,0x00000000);
+    ScreenDraw.fillRect(x+w-2,y+h-2,2,2,0x00000000);
+
+    // ===== TEXT =====
+    ScreenDraw.text8x8(x+12,y+8,text,0xFFFFFFFF);
+}
+
+// ===== MENU =====
+function drawMenu(){
+    drawBackground();
+
+    ScreenDraw.text8x8(90,40,"NEON RUN",0xFFFF00FF);
+
+    var i=0;
+    while(i<menuItems.length){
+        drawButton(90,80 + i*40,140,30,menuItems[i], i==menuIndex);
+        i++;
+    }
+
+    ScreenDraw.text8x8(10,200,"BEST:"+highscore,0xFFFFD700);
+}
+
+// ===== ACHIEVEMENTS =====
+function drawAchievements(){
+    drawBackground();
+
+    ScreenDraw.text8x8(100,10,"ACHIEVEMENTS",0xFFFF00FF);
+
+    var list = Achievements.getList();
+
+    var y = 20;
+    var i = 0;
+
+    for(var id in list){
+
+        var unlocked = Achievements.isUnlocked(id);
+
+        var title = unlocked ? list[id].title : "???";
+        var desc  = unlocked ? list[id].desc  : "Locked";
+
+        // box
+        ScreenDraw.fillRect(30,y,260,30,0xFF222244);
+        ScreenDraw.rect(30,y,260,30,0xFF00FFFF);
+
+        // tekst
+        ScreenDraw.text5x8(40,y+6,title, unlocked ? 0xFFFFFFFF : 0xFF666666);
+        ScreenDraw.text5x8(40,y+16,desc, unlocked ? 0xFFAAAAAA : 0xFF444444);
+
+        y += 35;
+        i++;
+    }
+
+    ScreenDraw.text5x8(100,230,"START = BACK",0xFFFFFFFF);
+}
+
+// ===== RESET =====
+function resetGame(){
+    player.y=150; player.vy=0; player.jumps=0;
+    obstacles=[]; platforms=[]; particles=[]; coins=[];
+    spawnTimer=0;
+    score=0;
+    coinsCollected = 0;
+    lastSpikeWave = 0;
+     isGameOver = false;
+}
+
+
+function gameOver(){
+
+    if(isGameOver) return; 
+    isGameOver = true;
+
+    stats.deaths++;
+    needSaveStats = true;
+
+    if(score > highscore){
+        highscore = score;
+        FS.writeTextFile("/mnt/sda1/sajnaps/neonrun_hs.txt", highscore.toFixed(0));
+    }
+
+    gameOverTimer = 300;
+    state = STATE_GAMEOVER;
+}
+// ===== UPDATE GAME =====
+function updateGame(){
+    var input=getInputState();
+
+    // jump + particles
+    if((input & BTN_A) && !(prevInput & BTN_A)){
+        if(player.jumps<2){
+            player.vy=jumpPower;
+            player.jumps++;
+            spawnParticles(player.x,player.y);
+            Achievements.unlock("jump"); // 
+            stats.jumps++;
+        }
+    }
+
+    player.vy+=gravity;
+    player.y+=player.vy;
+
+    var onGround=false;
+
+    if(player.y>=groundY-player.h){
+        player.y=groundY-player.h;
+        player.vy=0;
+        onGround=true;
+    }
+
+    // platforms
+    var i=0;
+    while(i<platforms.length){
+        var p=platforms[i];
+
+        if(
+            player.x+player.w>p.x &&
+            player.x<p.x+34 &&
+            player.y+player.h>=p.y &&
+            player.y+player.h<=p.y+10 &&
+            player.vy>=0
+        ){
+            player.y=p.y-player.h;
+            player.vy=0;
+            onGround=true;
+        }
+        i++;
+    }
+
+    if(onGround){
+        if(player.jumps!=0) spawnParticles(player.x,player.y+player.h);
+        player.jumps=0;
+    }
+
+    // spawn
+    spawnTimer++;
+    if(spawnTimer>30){
+        spawnTimer=0;
+
+        var r=Math.random();
+        if(r<0.5) obstacles.push({x:330,y:groundY-18});
+        else if(r<0.9) platforms.push({x:330,y:groundY-70});
+        else coins.push({x:330,y:groundY-60});
+    }
+
+   scoreTimer++;
+
+if(scoreTimer > 10){
+    score++;
+    stats.distance++;
+    scoreTimer = 0;
+
+    if(score==100) Achievements.unlock("score100");
+    if(score==1000) Achievements.unlock("score1000");
+    if(score==5000) Achievements.unlock("score5000");
+}
+var level = Math.floor(score / 1000);
+speed = baseSpeed * Math.pow(1.1, level);
+    
+var wave = Math.floor(score / 100);
+
+if(wave > lastSpikeWave){
+    lastSpikeWave = wave;
+
+    var count = 2 + Math.floor(Math.random()*6);
+    var startX = 330;
+
+    var i=0;
+    while(i<count){
+        obstacles.push({
+            x:startX + i*16,
+            y:groundY-18
+        });
+        i++;
+    }
+
+    // platforma nad falą
+    platforms.push({
+        x:startX,
+        y:groundY - 50
+    });
+}
+    // obstacles
+    i=0;
+    while(i<obstacles.length){
+        var o=obstacles[i];
+        o.x-=speed;
+
+        if(
+            player.x<o.x+12 &&
+            player.x+player.w>o.x &&
+            player.y<o.y+18 &&
+            player.y+player.h>o.y
+        ){
+            gameOver();
+            return;
+        }
+
+        if(o.x<-20) obstacles.splice(i,1);
+        else i++;
+    }
+
+    // platforms move
+    i=0;
+    while(i<platforms.length){
+        var p=platforms[i];
+        p.x-=speed;
+        if(p.x<-40) platforms.splice(i,1);
+        else i++;
+    }
+
+    // coins
+    i=0;
+    while(i<coins.length){
+        var c=coins[i];
+        c.x-=speed;
+
+        if(
+            player.x<c.x+6 &&
+            player.x+player.w>c.x &&
+            player.y<c.y+6 &&
+            player.y+player.h>c.y
+        ){
+            score+=50;
+            stats.coins++;
+            coinsCollected++;
+
+if(coinsCollected==10) Achievements.unlock("coins10");
+if(coinsCollected==100) Achievements.unlock("coins100");
+            coins.splice(i,1);
+            continue;
+        }
+
+        if(c.x<-20) coins.splice(i,1);
+        else i++;
+    }
+
+    // particles
+    i=0;
+    while(i<particles.length){
+        var p=particles[i];
+        p.x+=p.vx;
+        p.y+=p.vy;
+        p.vy+=0.2;
+        p.life--;
+
+        if(p.life<=0) particles.splice(i,1);
+        else i++;
+    }
+}
+
+// ===== DRAW GAME =====
+function drawGame(){
+    drawBackground();
+
+    ScreenDraw.fillRect(0,groundY,320,40,0xFF0A1030);
+
+    var i=0;
+    while(i<platforms.length){ drawPlatform(platforms[i].x,platforms[i].y); i++; }
+    i=0;
+    while(i<obstacles.length){ drawSpike(obstacles[i].x,obstacles[i].y); i++; }
+    i=0;
+    while(i<coins.length){ drawCoin(coins[i].x,coins[i].y); i++; }
+
+    ScreenDraw.fillRect(player.x,player.y,player.w,player.h,0xFF00FFAA);
+
+    i=0;
+    while(i<particles.length){
+        var p=particles[i];
+        ScreenDraw.fillRect(p.x,p.y,3,3,p.color);
+        i++;
+    }
+
+    ScreenDraw.text5x8(5,5,"SCORE:"+score,0xFFFFFF00);
+}
+
+// ===== GAME OVER =====
+function drawGameOver(){
+    drawBackground();
+
+    // ===== TITLE =====
+    ScreenDraw.text8x8(90,40,"GAME OVER",0xFFFF00FF);
+
+    // ===== BOX =====
+    var x = 60;
+    var y = 75;
+    var w = 200;
+    var h = 90;
+
+    // body (rounded jak button)
+    ScreenDraw.fillRect(x+2,y,w-4,h,0xFF222244);
+    ScreenDraw.fillRect(x,y+2,w,h-4,0xFF222244);
+
+    // border neon
+    ScreenDraw.rect(x+2,y,w-4,h,0xFF00FFFF);
+    ScreenDraw.rect(x,y+2,w,h-4,0xFF00FFFF);
+
+    // rogi (rounded fake)
+    ScreenDraw.fillRect(x,y,2,2,0x00000000);
+    ScreenDraw.fillRect(x+w-2,y,2,2,0x00000000);
+    ScreenDraw.fillRect(x,y+h-2,2,2,0x00000000);
+    ScreenDraw.fillRect(x+w-2,y+h-2,2,2,0x00000000);
+
+    // ===== SCORE LABEL =====
+    ScreenDraw.text5x8(120,90,"SCORE",0xFF00FFFF);
+
+    // ===== SCORE (DUŻY + GLOW) =====
+    ScreenDraw.text8x8(104,104,""+score,0x33FFFFFF);
+    ScreenDraw.text8x8(103,103,""+score,0xFFFFFFFF);
+
+    // ===== SEPARATOR =====
+    ScreenDraw.line(x+20,y+55,x+w-20,y+55,0x2200FFFF);
+
+    // ===== BEST =====
+    ScreenDraw.text5x8(110,135,"BEST:"+highscore,0xFFFFD700);
+
+    // ===== HINT =====
+    ScreenDraw.text5x8(85,200,"PRESS A",0xFF8888FF);
+}
+function drawStats(){
+    drawBackground();
+
+    ScreenDraw.text8x8(100,30,"STATS",0xFFFF00FF);
+
+    // box
+    ScreenDraw.fillRect(40,70,240,140,0xFF222244);
+    ScreenDraw.rect(40,70,240,140,0xFF00FFFF);
+
+    ScreenDraw.text5x8(60,90,"DISTANCE:"+stats.distance,0xFFFFFFFF);
+    ScreenDraw.text5x8(60,110,"COINS:"+stats.coins,0xFFFFFFFF);
+    ScreenDraw.text5x8(60,130,"JUMPS:"+stats.jumps,0xFFFFFFFF);
+    ScreenDraw.text5x8(60,150,"DEATHS:"+stats.deaths,0xFFFFFFFF);
+
+    ScreenDraw.text5x8(90,220,"START = BACK",0xFFFFFFFF);
+}
+function drawCredits(){
+    drawBackground();
+
+    ScreenDraw.text8x8(100,30,"CREDITS",0xFFFF00FF);
+
+    ScreenDraw.fillRect(40,70,240,120,0xFF222244);
+    ScreenDraw.rect(40,70,240,120,0xFF00FFFF);
+
+    // tekst
+    ScreenDraw.text5x8(60,90,"GAME DESIGN",0xFF00FFFF);
+    ScreenDraw.text5x8(60,105,"Sajnaps",0xFFFFFFFF);
+
+    ScreenDraw.text5x8(60,125,"Code",0xFF00FFFF);
+    ScreenDraw.text5x8(60,140,"Sajnaps;)",0xFFFFFFFF);
+
+    ScreenDraw.text5x8(90,210,"START = BACK",0xFFFFFFFF);
+}
+// ===== LOOP =====
+setMainLoop(function(){
+
+    var input=getInputState();
+
+    var start=(input & BTN_START) && !(prevInput & BTN_START);
+    var up=(input & BTN_UP) && !(prevInput & BTN_UP);
+    var down=(input & BTN_DOWN) && !(prevInput & BTN_DOWN);
+    var select=(input & BTN_A) && !(prevInput & BTN_A);
+
+    if(state==STATE_MENU){
+
+        if(up){ menuIndex--; if(menuIndex<0) menuIndex=menuItems.length-1; }
+        if(down){ menuIndex++; if(menuIndex>=menuItems.length) menuIndex=0; }
+
+        if(select){
+            if(menuIndex==0){ resetGame(); state=STATE_GAME; }
+            if(menuIndex==1){ state=STATE_ACHIEVEMENTS; }
+             if(menuIndex==2){ state=STATE_CREDITS; } 
+             if(menuIndex==3){ state=STATE_STATS; }
+        }
+
+        drawMenu();
+    }
+    else if(state==STATE_ACHIEVEMENTS){
+        if(start) state=STATE_MENU;
+        drawAchievements();
+    }
+    else if(state==STATE_CREDITS){
+    if(start) state=STATE_MENU;
+    drawCredits();
+}
+ else if(state==STATE_STATS){ 
+        if(start) state=STATE_MENU;
+        drawStats();
+    }
+
+    else if(state==STATE_GAME){
+        updateGame();
+        drawGame();
+    }
+    else if(state==STATE_GAMEOVER){
+
+    var pressA = (input & BTN_A) && !(prevInput & BTN_A);
+
+    gameOverTimer--;
+
+    drawGameOver();
+
+    if(pressA || gameOverTimer <= 0){
+        resetGame();
+        state = STATE_MENU;
+    }
+}
+    else{
+        if(start){ resetGame(); state=STATE_GAME; }
+        drawGameOver();
+    }
+
+    prevInput=input;
+    Achievements.update();
+Achievements.draw();
+if(needSaveStats){
+    saveStats();
+    needSaveStats = false;
+}
+});

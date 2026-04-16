@@ -1,0 +1,73 @@
+// ===== CONFIG =====
+var W = 320;
+var H = 240;
+
+var STEP = 5; 
+
+var BASE_Y = 130;
+var AMP = 16;
+
+var FREQ = 0.02;
+var SPEED = 0.04;
+
+var time = 0;
+
+// precompute
+var freqX = new Float32Array(W);
+for (var i = 0; i < W; i++) {
+    freqX[i] = i * FREQ;
+}
+
+
+// ===== PARTICLES =====
+var P_COUNT = 20;
+var px = new Uint16Array(P_COUNT);
+var py = new Uint16Array(P_COUNT);
+
+for (var i = 0; i < P_COUNT; i++) {
+    px[i] = Math.random() * W;
+    py[i] = Math.random() * H;
+}
+
+
+// ===== MAIN LOOP =====
+setMainLoop(function() {
+
+    ScreenDraw.clear(0xFF000000);
+
+    time += SPEED;
+
+    var t = time;
+
+    // 🔥 jedna fala (XMB style)
+    for (var x = 0; x < W; x += STEP) {
+
+        var s = Math.sin(freqX[x] + t);
+
+        var y = (BASE_Y + s * AMP) | 0;
+
+        // glow 
+        ScreenDraw.fillRect(x, y - 2, STEP, 4, 0x3300AAFF);
+
+        // rdzeń
+        ScreenDraw.fillRect(x, y, STEP, 1, 0xFF00FFFF);
+
+        // fake druga fala 
+        ScreenDraw.fillRect(x, y + 6, STEP, 1, 0x2200FFFF);
+    }
+
+
+    // ===== PARTICLES =====
+    for (var i = 0; i < P_COUNT; i++) {
+
+        py[i]--;
+
+        if (py[i] == 0) {
+            py[i] = H;
+            px[i] = Math.random() * W;
+        }
+
+        ScreenDraw.fillRect(px[i], py[i], 1, 1, 0x88FFFFFF);
+    }
+
+});

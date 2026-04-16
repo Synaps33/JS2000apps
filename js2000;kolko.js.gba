@@ -1,0 +1,292 @@
+// ===== INPUT =====
+var BTN_UP     = 1<<4;
+var BTN_DOWN   = 1<<5;
+var BTN_LEFT   = 1<<6;
+var BTN_RIGHT  = 1<<7;
+var BTN_A      = 1<<8;
+
+// ===== STATE =====
+var board = [0,0,0,0,0,0,0,0,0];
+var anim = [0,0,0,0,0,0,0,0,0];
+var cursor = 4;
+var turn = 1;
+var gameState = 0;
+var vsAI = true;
+var winner = 0;
+var winLine = [];
+
+var inputPrev = 0;
+var startMsgTimer = 0;
+var aiDelay = 0;
+var pulse = 0;
+
+// ===== WIN LINES =====
+var lines = [
+[0,1,2],[3,4,5],[6,7,8],
+[0,3,6],[1,4,7],[2,5,8],
+[0,4,8],[2,4,6]
+];
+
+// ===== FIXED CHECK WIN =====
+function checkWinner(setLine){
+    for(var i=0;i<lines.length;i++){
+        var l=lines[i];
+        if(board[l[0]] && board[l[0]]==board[l[1]] && board[l[0]]==board[l[2]]){
+
+            if(setLine){
+                winLine = l;
+            }
+
+            return board[l[0]];
+        }
+    }
+
+    for(var i=0;i<9;i++) if(board[i]==0) return 0;
+    return 3;
+}
+
+// ===== AI =====
+function aiMove(){
+
+    // win
+    for(var i=0;i<9;i++){
+        if(board[i]==0){
+            board[i]=2;
+            if(checkWinner(false)==2){ anim[i]=0; return; }
+            board[i]=0;
+        }
+    }
+
+    // block
+    for(var i=0;i<9;i++){
+        if(board[i]==0){
+            board[i]=1;
+            if(checkWinner(false)==1){ board[i]=2; anim[i]=0; return; }
+            board[i]=0;
+        }
+    }
+
+    // center
+    if(board[4]==0){
+        board[4]=2;
+        anim[4]=0;
+        return;
+    }
+
+    // random
+    var empty=[];
+    for(var i=0;i<9;i++) if(board[i]==0) empty.push(i);
+    var r = empty[(Math.random()*empty.length)|0];
+    board[r]=2;
+    anim[r]=0;
+}
+
+// ===== RESET =====
+function resetGame(){
+    for(var i=0;i<9;i++){
+        board[i]=0;
+        anim[i]=0;
+    }
+
+    cursor=4;
+    winner=0;
+    winLine=[];
+
+    turn = (Math.random()<0.5)?1:2;
+    startMsgTimer = 60;
+
+    if(vsAI && turn==2){
+        aiDelay = 25;
+    }
+}
+
+// ===== SYMBOLS =====
+function drawX(cx, cy, size, color){
+    var p = size/2 - 10;
+    ScreenDraw.line(cx-p, cy-p, cx+p, cy+p, color);
+    ScreenDraw.line(cx+p, cy-p, cx-p, cy+p, color);
+}
+
+function drawO(cx, cy, r, color){
+    var steps = 20;
+    for(var i=0;i<steps;i++){
+        var a = (i/steps)*Math.PI*2;
+        var b = ((i+1)/steps)*Math.PI*2;
+
+        var x1 = cx + Math.cos(a)*r;
+        var y1 = cy + Math.sin(a)*r;
+        var x2 = cx + Math.cos(b)*r;
+        var y2 = cy + Math.sin(b)*r;
+
+        ScreenDraw.line(x1,y1,x2,y2,color);
+    }
+}
+
+// ===== BOARD =====
+function drawBoard(){
+    var s=60;
+    var ox=160 - (s*3)/2;
+    var oy=120 - (s*3)/2;
+
+    ScreenDraw.fillRect(ox-10, oy-10, s*3+20, s*3+20, 0xFF0D1B2A);
+
+    // tiles
+    for(var i=0;i<9;i++){
+        var x=i%3, y=(i/3)|0;
+        var px=ox+x*s;
+        var py=oy+y*s;
+
+        ScreenDraw.fillRect(px+2, py+2, s-4, s-4, 0xFF1B263B);
+        ScreenDraw.rect(px, py, s, s, 0xFF415A77);
+    }
+
+    // win highlight (ONLY REAL WIN)
+    for(var i=0;i<winLine.length;i++){
+        var idx=winLine[i];
+        var x=idx%3,y=(idx/3)|0;
+        ScreenDraw.fillRect(ox+x*s,oy+y*s,s,s,0x44FFD700);
+    }
+
+    // cursor
+    var cx=cursor%3, cy=(cursor/3)|0;
+    var px=ox+cx*s, py=oy+cy*s;
+
+    var glow = (Math.sin(pulse)*0.5+0.5)*80;
+    ScreenDraw.fillRect(px, py, s, s, 0x2200FF00 + (glow<<8));
+    ScreenDraw.rect(px, py, s, s, 0xFF00FFAA);
+
+    // symbols ON TOP
+    for(var i=0;i<9;i++){
+        if(board[i]){
+            if(anim[i]<1) anim[i]+=0.15;
+
+            var x=i%3, y=(i/3)|0;
+            var px=ox+x*s;
+            var py=oy+y*s;
+
+            var cx = px + s/2;
+            var cy = py + s/2;
+
+            var c = board[i]==1?0xFFFF6B6B:0xFF4CC9F0;
+
+            if(board[i]==1){
+                drawX(cx, cy, s*0.8*anim[i], c);
+            } else {
+                drawO(cx, cy, (s/2-8)*anim[i], c);
+            }
+        }
+    }
+}
+
+// ===== INPUT =====
+function pressed(btn, input){
+    return (input & btn) && !(inputPrev & btn);
+}
+
+// ===== LOOP =====
+setMainLoop(function(){
+    var input = getInputState();
+    pulse += 0.1;
+
+    // ===== MENU =====
+    if(gameState==0){
+
+        if(pressed(BTN_UP,input)||pressed(BTN_DOWN,input)){
+            vsAI=!vsAI;
+        }
+
+        if(pressed(BTN_A,input)){
+            resetGame();
+            gameState=1;
+        }
+
+        ScreenDraw.clear(0xFF0A0F1A);
+
+        ScreenDraw.text8x8(90,50,"TIC TAC TOE",0xFFFFFFFF);
+
+        var aiColor = vsAI ? 0xFF00FFAA : 0xFF1B263B;
+        ScreenDraw.fillRect(90,100,140,35, aiColor);
+        ScreenDraw.rect(90,100,140,35, 0xFFFFFFFF);
+        ScreenDraw.text8x8(130,112,"VS AI",0xFFFFFFFF);
+
+        var pvpColor = !vsAI ? 0xFF00FFAA : 0xFF1B263B;
+        ScreenDraw.fillRect(90,150,140,35, pvpColor);
+        ScreenDraw.rect(90,150,140,35, 0xFFFFFFFF);
+        ScreenDraw.text8x8(140,162,"PVP",0xFFFFFFFF);
+
+        ScreenDraw.text5x8(110,210,"UP/DOWN + A",0xFFFFFFFF);
+    }
+
+    // ===== GAME =====
+    else if(gameState==1){
+
+        // AI
+        if(vsAI && turn==2){
+            if(aiDelay>0){
+                aiDelay--;
+            } else {
+                aiMove();
+                winner = checkWinner(true);
+
+                if(!winner){
+                    turn=1;
+                } else {
+                    gameState=2;
+                }
+            }
+        }
+
+        // PLAYER
+        if(turn==1 || !vsAI){
+
+            if(pressed(BTN_LEFT,input)&&cursor%3>0)cursor--;
+            if(pressed(BTN_RIGHT,input)&&cursor%3<2)cursor++;
+            if(pressed(BTN_UP,input)&&cursor>2)cursor-=3;
+            if(pressed(BTN_DOWN,input)&&cursor<6)cursor+=3;
+
+            if(pressed(BTN_A,input)){
+                if(board[cursor]==0){
+                    board[cursor]=turn;
+                    anim[cursor]=0;
+
+                    winner=checkWinner(true);
+
+                    if(!winner){
+                        turn = turn==1?2:1;
+                        if(vsAI && turn==2) aiDelay=20;
+                    } else {
+                        gameState=2;
+                    }
+                }
+            }
+        }
+
+        ScreenDraw.clear(0xFF101820);
+        drawBoard();
+
+        ScreenDraw.text8x8(5,5, turn==1?"X TURN":"O TURN",0xFFFFFFFF);
+
+        if(startMsgTimer>0){
+            var msg = turn==1?"X STARTS":"O STARTS";
+            ScreenDraw.text8x8(110,20,msg,0xFFFFFF00);
+            startMsgTimer--;
+        }
+    }
+
+    // ===== END =====
+    else if(gameState==2){
+
+        ScreenDraw.clear(0xFF101820);
+        drawBoard();
+
+        var msg = winner==1?"X WIN":winner==2?"O WIN":"DRAW";
+        ScreenDraw.text8x8(120,200,msg,0xFFFFFF00);
+        ScreenDraw.text5x8(110,220,"A AGAIN",0xFFFFFFFF);
+
+        if(pressed(BTN_A,input)){
+            gameState=0;
+        }
+    }
+
+    inputPrev=input;
+});
