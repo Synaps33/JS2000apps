@@ -1,3 +1,5 @@
+//(C) Sajnaps
+
 // ================== BUTTONS ==================
 var BTN_UP=1<<4, BTN_DOWN=1<<5, BTN_LEFT=1<<6, BTN_RIGHT=1<<7;
 var BTN_A=1<<8;
