@@ -1,3 +1,6 @@
+//(C) Sajnaps
+
+
 // ===== INPUT =====
 var BTN_A = 1<<8;
 var BTN_START = 1<<3;
